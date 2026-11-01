@@ -12,12 +12,18 @@ from sequoia_x.core.config import Settings
 from sequoia_x.notify.feishu import FeishuNotifier
 
 
-def make_settings(webhook_url: str = "https://example.com/default") -> Settings:
+def make_settings(webhook_url: str = "https://open.feishu.cn/open-apis/bot/v2/hook/test-default") -> Settings:
     return Settings(
         db_path="data/test.db",
         start_date="2024-01-01",
         feishu_webhook_url=webhook_url,
     )
+
+
+@pytest.fixture(autouse=True)
+def _mock_stock_names(monkeypatch):
+    """避免单测访问 baostock 网络：股票名称查询返回空映射。"""
+    monkeypatch.setattr(FeishuNotifier, "_get_stock_names", staticmethod(lambda symbols: {}))
 
 
 # Feature: sequoia-x-v2, Property 10: 飞书通知包含所有选股结果
@@ -91,3 +97,21 @@ def test_http_failure_logs_error(status_code: int) -> None:
         feishu_logger.removeHandler(handler)
 
     assert any(r.levelno == _logging.ERROR for r in log_records)
+
+
+def test_no_webhook_writes_local_report(tmp_path) -> None:
+    """未配置 Webhook 时，send() 不发起 HTTP 请求，改为写入本地报告。"""
+    settings = Settings(
+        db_path=str(tmp_path / "test.db"),
+        start_date="2024-01-01",
+        feishu_webhook_url="",
+        report_dir=str(tmp_path / "reports"),
+    )
+    notifier = FeishuNotifier(settings)
+
+    with patch("requests.post") as mock_post:
+        notifier.send(symbols=["600000", "000001"], strategy_name="TurtleTrade", webhook_key="turtle")
+
+    assert not mock_post.called
+    report = (tmp_path / "reports" / "latest.md").read_text(encoding="utf-8")
+    assert "600000" in report and "turtle" in report

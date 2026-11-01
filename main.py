@@ -19,6 +19,7 @@ from sequoia_x.core.config import get_settings
 from sequoia_x.core.logger import get_logger
 from sequoia_x.data.engine import DataEngine
 from sequoia_x.notify.feishu import FeishuNotifier
+from sequoia_x.notify.report import LocalReporter
 from sequoia_x.strategy.base import BaseStrategy
 from sequoia_x.strategy.high_tight_flag import HighTightFlagStrategy
 from sequoia_x.strategy.limit_up_shakeout import LimitUpShakeoutStrategy
@@ -34,7 +35,13 @@ def main() -> None:
     parser.add_argument(
         "--backfill",
         action="store_true",
-        help="回填模式：通过 baostock 拉取全市场历史 K 线（约12分钟）",
+        help="回填模式：通过 baostock 拉取全市场历史 K 线（并行，约 20 分钟）",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="回填模式的并行进程数（默认取 .env 的 BACKFILL_WORKERS，建议 2~4）",
     )
     args = parser.parse_args()
 
@@ -53,7 +60,7 @@ def main() -> None:
             # ── 回填模式：单线程保守拉历史 K 线，自动多轮重跑 ──
             logger.info("进入回填模式...")
             all_symbols = engine.get_all_symbols()
-            engine.backfill(all_symbols)
+            engine.backfill(all_symbols, workers=args.workers or settings.backfill_workers)
             logger.info("Sequoia-X V2 回填模式运行完成")
             return
 
@@ -73,9 +80,13 @@ def main() -> None:
             PrivatePlacementStrategy(engine=engine, settings=settings),
         ]
 
-        notifier = FeishuNotifier(settings)
+        notifier = FeishuNotifier(settings) if settings.feishu_enabled else LocalReporter(settings)
+        if settings.feishu_enabled:
+            logger.info("飞书 Webhook 已配置，选股结果推送飞书")
+        else:
+            logger.info("未配置飞书 Webhook，选股结果将写入本地报告 reports/")
 
-        # 5. 遍历策略，有结果则推送至对应机器人
+        # 5. 遍历策略，有结果则推送（本地报告模式记录全部策略，含空结果）
         for strategy in strategies:
             strategy_name = type(strategy).__name__
             logger.info(f"执行策略：{strategy_name}")
@@ -83,7 +94,7 @@ def main() -> None:
             selected: list[str] = strategy.run()
             logger.info(f"{strategy_name} 选出 {len(selected)} 只股票")
 
-            if selected:
+            if selected or getattr(notifier, "report_empty", False):
                 notifier.send(
                     symbols=selected,
                     strategy_name=strategy_name,
@@ -91,6 +102,9 @@ def main() -> None:
                 )
             else:
                 logger.info(f"{strategy_name} 无选股结果，跳过推送")
+
+        if hasattr(notifier, "finalize"):
+            notifier.finalize()
 
     except Exception:
         try:

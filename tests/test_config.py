@@ -21,17 +21,29 @@ def test_env_overrides_default(db_path: str, monkeypatch) -> None:
     assert s.db_path == db_path
 
 
-# Feature: sequoia-x-v2, Property 2: 缺失必填字段触发 ValidationError
-def test_missing_required_field_raises() -> None:
-    """属性 2：缺少 feishu_webhook_url 时，实例化 Settings 应抛出 ValidationError。"""
+# Feature: sequoia-x-v2, Property 2: 缺失 feishu_webhook_url 时降级为本地报告
+def test_missing_webhook_degrades_to_local_report() -> None:
+    """未配置 feishu_webhook_url 时不再抛错，feishu_enabled 为 False（走本地报告）。"""
     import os
     from sequoia_x.core.config import Settings
     # 确保环境变量中没有该字段
     env_backup = os.environ.pop("FEISHU_WEBHOOK_URL", None)
     try:
-        with pytest.raises(ValidationError) as exc_info:
-            Settings(_env_file=None)
-        assert "feishu_webhook_url" in str(exc_info.value).lower()
+        s = Settings(_env_file=None)
+        assert s.feishu_webhook_url == ""
+        assert s.feishu_enabled is False
     finally:
         if env_backup is not None:
             os.environ["FEISHU_WEBHOOK_URL"] = env_backup
+
+
+# Feature: sequoia-x-v2, Property 3: 占位符 Webhook 视为未配置
+def test_placeholder_webhook_is_not_usable() -> None:
+    """模板占位符或非法 URL 不算可用 Webhook。"""
+    from sequoia_x.core.config import Settings
+
+    assert Settings.is_usable_webhook("") is False
+    assert Settings.is_usable_webhook(None) is False
+    assert Settings.is_usable_webhook("https://open.feishu.cn/open-apis/bot/v2/hook/your-default-token") is False
+    assert Settings.is_usable_webhook("https://example.com/hook") is False
+    assert Settings.is_usable_webhook("https://open.feishu.cn/open-apis/bot/v2/hook/abc123") is True

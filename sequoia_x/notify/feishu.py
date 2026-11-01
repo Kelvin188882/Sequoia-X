@@ -7,6 +7,8 @@ import requests
 
 from sequoia_x.core.config import Settings
 from sequoia_x.core.logger import get_logger
+from sequoia_x.notify.codes import to_xueqiu_code
+from sequoia_x.notify.report import LocalReporter
 
 logger = get_logger(__name__)
 
@@ -17,7 +19,11 @@ class FeishuNotifier:
     根据策略的 webhook_key 路由到对应的飞书机器人。
     若 webhook_key 未在 Settings.strategy_webhooks 中配置，
     则 fallback 到 Settings.feishu_webhook_url。
+    若当前策略没有任何可用的真实 Webhook，则自动降级为本地报告输出。
     """
+
+    # 空结果不推送飞书（本地报告模式下会记录）
+    report_empty: bool = False
 
     def __init__(self, settings: Settings) -> None:
         """
@@ -27,15 +33,13 @@ class FeishuNotifier:
             settings: Settings 实例，提供 Webhook URL 配置。
         """
         self.settings = settings
+        # 惰性初始化：真正需要降级时才创建，保证同一实例内累计报告结果
+        self._local_reporter: LocalReporter | None = None
 
     @staticmethod
     def _to_xueqiu_code(code: str) -> str:
         """将纯数字代码转为雪球格式：6开头→SH，4/8开头→BJ，其余→SZ。"""
-        if code.startswith("6"):
-            return f"SH{code}"
-        elif code.startswith(("4", "8")):
-            return f"BJ{code}"
-        return f"SZ{code}"
+        return to_xueqiu_code(code)
 
     @staticmethod
     def _get_stock_names(symbols: list[str]) -> dict[str, str]:
@@ -114,7 +118,14 @@ class FeishuNotifier:
         Raises:
             不抛出异常，HTTP 失败时记录 ERROR 日志。
         """
-        url = self.settings.get_webhook_url(webhook_key)
+        url = self.settings.get_usable_webhook(webhook_key)
+        if url is None:
+            # 未配置真实 Webhook → 降级写本地报告
+            if self._local_reporter is None:
+                self._local_reporter = LocalReporter(self.settings)
+            self._local_reporter.send(symbols, strategy_name, webhook_key)
+            return
+
         payload = self._build_card(symbols, strategy_name)
 
         try:

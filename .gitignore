@@ -33,6 +33,19 @@ build/
 
 # 日志
 *.log
+logs/
+logs_*.txt
+
+# 本地数据/工具目录
+.workbuddy/
 
 # Hypothesis 测试缓存
 .hypothesis/
+
+# 本地报告输出
+reports/
+
+# 股票名称缓存与 WAL 临时文件
+data/stock_names.json
+data/*.db-wal
+data/*.db-shm

@@ -6,8 +6,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     db_path: str = "data/sequoia_v2.db"
     start_date: str = "2024-01-01"
-    feishu_webhook_url: str  # 必填字段，缺失时抛出 ValidationError
+    # 飞书 Webhook 改为可选：未配置时自动降级为本地报告输出（reports/ 目录）
+    feishu_webhook_url: str = ""
     strategy_webhooks: dict[str, str] = {}
+    # 本地报告输出目录（无飞书 Webhook 时生效）
+    report_dir: str = "reports"
+    # baostock 并发数：过高会被判为滥用并临时拉黑 IP，生产环境建议 2~4
+    sync_workers: int = 4
+    backfill_workers: int = 2
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -69,6 +75,29 @@ class Settings(BaseSettings):
             对应的 Webhook URL 字符串。
         """
         return self.strategy_webhooks.get(webhook_key.lower(), self.feishu_webhook_url)
+
+    @staticmethod
+    def is_usable_webhook(url: str | None) -> bool:
+        """判断 Webhook 是否为真实可用的地址（排除空值和模板占位符）。"""
+        if not url:
+            return False
+        url = url.strip()
+        if not url.startswith(("http://", "https://")):
+            return False
+        placeholders = ("your-", "your_", "example.com", "xxx", "placeholder")
+        return not any(p in url.lower() for p in placeholders)
+
+    def get_usable_webhook(self, webhook_key: str) -> str | None:
+        """返回可用的 Webhook URL；策略专属未配置时回退到默认地址。"""
+        for candidate in (self.strategy_webhooks.get(webhook_key.lower()), self.feishu_webhook_url):
+            if self.is_usable_webhook(candidate):
+                return candidate  # type: ignore[return-value]
+        return None
+
+    @property
+    def feishu_enabled(self) -> bool:
+        """是否存在可用的飞书 Webhook；为 False 时降级为本地报告。"""
+        return self.get_usable_webhook("default") is not None
 
 
 _settings: Settings | None = None
