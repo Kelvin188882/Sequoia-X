@@ -16,7 +16,7 @@ from pathlib import Path
 from sequoia_x.core.config import Settings
 from sequoia_x.core.logger import get_logger
 from sequoia_x.notify.codes import to_xueqiu_code
-from sequoia_x.notify.meta import STRATEGY_LABELS
+from sequoia_x.notify.meta import STRATEGY_LABELS, STRATEGY_USAGE
 
 logger = get_logger(__name__)
 
@@ -91,6 +91,11 @@ class LocalReporter:
         for key, symbols in self._results.items():
             label = STRATEGY_LABELS.get(key, key)
             lines += ["", f"## {label}（{key}）", ""]
+            usage = STRATEGY_USAGE.get(key)
+            if usage:
+                lines.append("**怎么用：**")
+                lines += [f"- {u}" for u in usage]
+                lines.append("")
             if not symbols:
                 lines.append("_当日无符合条件标的_")
                 continue

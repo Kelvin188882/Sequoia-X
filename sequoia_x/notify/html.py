@@ -159,8 +159,17 @@ def _render_strategy_section(
     metrics: dict[str, dict],
     names: dict[str, str],
 ) -> str:
-    label, note, cond = STRATEGY_META.get(key, (key, "", ""))
+    label, note, cond, usage = STRATEGY_META.get(key, (key, "", "", []))
     count = len(symbols)
+    usage_html = ""
+    if usage:
+        items = "".join(f"<li>{escape(u)}</li>" for u in usage)
+        usage_html = (
+            '<div class="sec-usage">'
+            '<span class="usage-tag">怎么用</span>'
+            f"<ul>{items}</ul>"
+            "</div>"
+        )
     head = (
         f'<section class="strategy" id="s-{key}" data-strategy="{key}">'
         f'<div class="sec-head">'
@@ -170,6 +179,7 @@ def _render_strategy_section(
         f'<p class="sec-note">{escape(note)}</p>'
         f'<p class="sec-cond">{escape(cond)}'
         f'{"　·　按涨跌幅降序" if symbols else ""}</p>'
+        f"{usage_html}"
     )
     if not symbols:
         return head + '<p class="empty">当日无符合条件的标的</p></section>'
@@ -227,7 +237,7 @@ def build_html(settings: Settings, json_path: Path | None = None) -> Path:
 
     overview_rows = "\n".join(
         f'<a class="ov-row{" zero" if not strategies[k] else ""}" href="#s-{k}">'
-        f'<span class="ov-label">{escape(STRATEGY_META.get(k, (k, "", ""))[0])}</span>'
+        f'<span class="ov-label">{escape(STRATEGY_META.get(k, (k, "", "", []))[0])}</span>'
         f'<span class="ov-track"><span class="ov-bar" style="width:{len(strategies[k]) / max_count * 100:.1f}%"></span></span>'
         f'<span class="ov-count">{len(strategies[k])}</span>'
         f"</a>"
@@ -364,6 +374,13 @@ main{{padding-bottom:96px}}
 .sec-count b{{font-size:var(--fs-body);color:var(--ink);font-weight:600}}
 .sec-note{{margin:2px 0 8px;max-width:68ch;font-size:var(--fs-body);line-height:1.65;color:var(--ink-2)}}
 .sec-cond{{margin:0 0 16px;max-width:92ch;font-size:var(--fs-cap);line-height:1.6;color:var(--ink-3)}}
+.sec-usage{{
+  margin:0 0 16px;max-width:76ch;padding:12px 16px;
+  background:var(--canvas-soft);border-left:2px solid var(--ink);border-radius:var(--r1);
+}}
+.usage-tag{{display:block;font-size:var(--fs-cap);font-weight:600;letter-spacing:.04em;color:var(--ink-3);margin-bottom:6px}}
+.sec-usage ul{{margin:0;padding-left:18px;font-size:var(--fs-body);line-height:1.65;color:var(--ink-2)}}
+.sec-usage li{{margin:2px 0}}
 .empty{{margin:16px 0 0;padding:16px 0;color:var(--ink-3);font-size:var(--fs-body);border-top:1px solid var(--paper-line)}}
 
 /* ── 表格 ── */
