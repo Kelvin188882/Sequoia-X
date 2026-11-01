@@ -31,26 +31,42 @@ CREATE INDEX IF NOT EXISTS idx_symbol_date ON stock_daily (symbol, date);
 """
 
 
-def _bs_fetch_batch(tasks: list) -> list:
-    """多进程 worker：独立 login，批量拉取 baostock 数据。"""
+def _bs_fetch_batch(tasks: list) -> tuple[list, list]:
+    """多进程 worker：独立 login，批量拉取 baostock 增量数据。
+
+    Returns:
+        (rows, errors)：rows 为 [symbol, date, open, ...] 数据行；
+        errors 为 [(symbol, 错误描述), ...]，symbol 为 "__login__" 表示登录级失败。
+
+        登录或查询失败不再静默跳过——否则限流/黑名单与非交易日在主流程里
+        表现完全一致（都是 0 行），会生成基于旧数据的报告却毫无告警。
+    """
     import baostock as bs
-    bs.login()
-    results = []
-    for symbol, bs_code, start, end in tasks:
-        rs = bs.query_history_k_data_plus(
-            bs_code,
-            "date,open,high,low,close,volume,amount",
-            start_date=start,
-            end_date=end,
-            frequency="d",
-            adjustflag="1",  # 后复权
-        )
-        if rs.error_code != "0":
-            continue
-        while rs.next():
-            results.append([symbol] + rs.get_row_data())
-    bs.logout()
-    return results
+
+    rows: list = []
+    errors: list = []
+    lg = bs.login()
+    if lg.error_code != "0":
+        return rows, [("__login__", f"{lg.error_code} {lg.error_msg}")]
+
+    try:
+        for symbol, bs_code, start, end in tasks:
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                "date,open,high,low,close,volume,amount",
+                start_date=start,
+                end_date=end,
+                frequency="d",
+                adjustflag="1",  # 后复权
+            )
+            if rs.error_code != "0":
+                errors.append((symbol, f"{rs.error_code} {rs.error_msg}"))
+                continue
+            while rs.next():
+                rows.append([symbol] + rs.get_row_data())
+    finally:
+        bs.logout()  # 异常也必须释放会话，否则会泄漏并中断整批同步
+    return rows, errors
 
 
 _BLACKLIST_HINTS = ("黑名单", "10001011", "频繁", "limit")
@@ -255,12 +271,31 @@ class DataEngine:
         with Pool(n_workers) as pool:
             batch_results = pool.map(_bs_fetch_batch, chunks)
 
-        all_rows = []
-        for batch in batch_results:
-            all_rows.extend(batch)
+        all_rows: list = []
+        all_errors: list = []
+        for rows, errors in batch_results:
+            all_rows.extend(rows)
+            all_errors.extend(errors)
+
+        # 错误必须显式暴露：限流/黑名单/网络故障与非交易日不能共用一句日志
+        login_errors = [m for s, m in all_errors if s == "__login__"]
+        query_errors = [(s, m) for s, m in all_errors if s != "__login__"]
+        if login_errors:
+            logger.error(
+                f"baostock 登录失败（{len(login_errors)}/{n_workers} 个 worker）：{login_errors[0]}。"
+                "若为黑名单/限流，本次同步无效，请降低 SYNC_WORKERS 或稍后重试。"
+            )
+        if query_errors:
+            logger.warning(
+                f"本次 {len(query_errors)} 只股票拉取失败（其历史数据已保留，不受影响），"
+                f"示例：{query_errors[:3]}"
+            )
 
         if not all_rows:
-            logger.info("无新数据（可能非交易日）")
+            if all_errors:
+                logger.error("未获取到任何新数据且存在上述错误，请勿视为非交易日。")
+            else:
+                logger.info("无新数据（可能非交易日）")
             return 0
 
         df = pd.DataFrame(all_rows, columns=["symbol", "date", "open", "high", "low", "close", "volume", "turnover"])
@@ -270,10 +305,18 @@ class DataEngine:
         df = df[df["volume"] > 0]
 
         count = len(df)
+        # 用 INSERT OR REPLACE 而非「先 DELETE 再 append」：
+        # 先删后插时，若某只股票本次拉取失败（停牌/超时/worker 出错），
+        # 它当天的历史会被永久删掉。UNIQUE(symbol, date) 约束本就支持幂等覆盖。
+        df = df.where(pd.notna(df), None)  # NaN -> None，便于 sqlite 绑定为 NULL
+        payload = list(df.itertuples(index=False, name=None))
         with sqlite3.connect(self.db_path) as conn:
-            for d in df["date"].unique().tolist():
-                conn.execute("DELETE FROM stock_daily WHERE date = ?", (d,))
-            df.to_sql("stock_daily", conn, if_exists="append", index=False, method="multi", chunksize=500)
+            conn.executemany(
+                "INSERT OR REPLACE INTO stock_daily "
+                "(symbol, date, open, high, low, close, volume, turnover) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                payload,
+            )
             conn.commit()
 
         logger.info(f"sync_today_bulk: 写入 {count} 条数据")
@@ -289,7 +332,7 @@ class DataEngine:
 
         Args:
             symbols: 待回填的股票代码列表（纯数字）。
-            workers: 并行进程数，默认 6。
+            workers: 并行进程数，默认 2（过高会被 baostock 判为滥用并拉黑 IP）。
         """
         from datetime import date, timedelta
         from multiprocessing import Pool

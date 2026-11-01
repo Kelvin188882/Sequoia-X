@@ -47,3 +47,31 @@ def test_placeholder_webhook_is_not_usable() -> None:
     assert Settings.is_usable_webhook("https://open.feishu.cn/open-apis/bot/v2/hook/your-default-token") is False
     assert Settings.is_usable_webhook("https://example.com/hook") is False
     assert Settings.is_usable_webhook("https://open.feishu.cn/open-apis/bot/v2/hook/abc123") is True
+
+
+def test_feishu_enabled_with_only_strategy_webhook(monkeypatch) -> None:
+    """只配置策略专属 Webhook（不配默认地址）时也应走飞书通道。
+
+    回归：此前 feishu_enabled 仅检查 default，导致专属地址被静默忽略。
+    """
+    from sequoia_x.core.config import Settings
+
+    monkeypatch.delenv("FEISHU_WEBHOOK_URL", raising=False)
+    monkeypatch.setenv(
+        "STRATEGY_WEBHOOK_TURTLE",
+        "https://open.feishu.cn/open-apis/bot/v2/hook/real-token-abc123",
+    )
+    s = Settings(_env_file=None)
+    assert s.feishu_enabled is True
+    assert s.get_usable_webhook("turtle") is not None
+    # 未配置的策略没有可用地址 → 由 Notifier 单独降级，不影响 turtle
+    assert s.get_usable_webhook("ma_volume") is None
+
+
+def test_strategy_labels_consistent_between_reports() -> None:
+    """Markdown 与 HTML 的策略显示名必须来自同一份元数据。"""
+    from sequoia_x.notify.html import STRATEGY_META
+    from sequoia_x.notify.report import STRATEGY_LABELS
+
+    for key, meta in STRATEGY_META.items():
+        assert STRATEGY_LABELS[key] == meta[0], f"{key} 两处名称不一致"

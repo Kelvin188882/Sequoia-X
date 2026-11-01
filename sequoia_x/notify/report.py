@@ -16,19 +16,9 @@ from pathlib import Path
 from sequoia_x.core.config import Settings
 from sequoia_x.core.logger import get_logger
 from sequoia_x.notify.codes import to_xueqiu_code
+from sequoia_x.notify.meta import STRATEGY_LABELS
 
 logger = get_logger(__name__)
-
-STRATEGY_LABELS: dict[str, str] = {
-    "ma_volume": "均线放量突破",
-    "turtle": "海龟突破",
-    "flag": "高窄旗形",
-    "shakeout": "涨停洗盘回踩",
-    "limit_down": "上升趋势跌停反包",
-    "rps": "RPS 相对强度突破",
-    "private_placement": "定增公告监控",
-    "default": "默认",
-}
 
 
 class LocalReporter:

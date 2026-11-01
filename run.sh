@@ -11,8 +11,9 @@ LOG="logs/run-${STAMP}.log"
 echo "[$(date '+%F %T')] Sequoia-X 开始运行" | tee -a "$LOG"
 if .venv/bin/python main.py >> "$LOG" 2>&1; then
   echo "[$(date '+%F %T')] 运行成功 → reports/latest.md" | tee -a "$LOG"
-  # 只保留最近 30 份日志
-  ls -1t logs/run-*.log 2>/dev/null | tail -n +31 | xargs -r rm -f
+  # 只保留最近 30 份日志；日志不足 30 份时 ls 无匹配会返回非零，
+  # 在 pipefail 下会让整个脚本误判为失败，这里显式吞掉
+  ls -1t logs/run-*.log 2>/dev/null | tail -n +31 | xargs -r rm -f || true
 else
   echo "[$(date '+%F %T')] 运行失败，详见 $LOG" | tee -a "$LOG"
   exit 1

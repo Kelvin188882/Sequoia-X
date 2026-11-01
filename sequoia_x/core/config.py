@@ -22,32 +22,6 @@ class Settings(BaseSettings):
         extra="ignore",  # <--- 加上这一行！让 Pydantic 放行未定义的变量
     )
 
-    @classmethod
-    def settings_customise_sources(cls, settings_cls, **kwargs):  # type: ignore[override]
-        """扩展配置源，支持从环境变量中扫描 STRATEGY_WEBHOOK_ 前缀的键。"""
-        from pydantic_settings import EnvSettingsSource
-        import os
-
-        sources = super().settings_customise_sources(settings_cls, **kwargs)
-
-        # 扫描环境变量，将 STRATEGY_WEBHOOK_<KEY> 收集到 strategy_webhooks
-        prefix = "STRATEGY_WEBHOOK_"
-        webhooks: dict[str, str] = {}
-        for key, value in os.environ.items():
-            if key.upper().startswith(prefix):
-                strategy_key = key[len(prefix):].lower()
-                webhooks[strategy_key] = value
-
-        # 注入到初始化数据中（通过 init_kwargs source）
-        if webhooks:
-            original_init = kwargs.get("init_settings")
-            # 直接在 env 层注入，通过 model_post_init 处理
-            os.environ.setdefault("_STRATEGY_WEBHOOKS_PARSED", "1")
-            # 存储解析结果供 model_validator 使用
-            cls._parsed_strategy_webhooks = webhooks
-
-        return sources
-
     def model_post_init(self, __context: object) -> None:
         """初始化后合并 STRATEGY_WEBHOOK_ 前缀的环境变量到 strategy_webhooks。"""
         import os
@@ -96,8 +70,15 @@ class Settings(BaseSettings):
 
     @property
     def feishu_enabled(self) -> bool:
-        """是否存在可用的飞书 Webhook；为 False 时降级为本地报告。"""
-        return self.get_usable_webhook("default") is not None
+        """是否存在任一可用的飞书 Webhook（默认地址或策略专属地址）。
+
+        只配置策略专属地址而未配默认地址时也应走飞书通道——此前仅检查
+        default，会导致专属 Webhook 被静默忽略、结果只写本地报告。
+        某个策略没有可用地址时，由 FeishuNotifier 单独降级，不影响其他策略。
+        """
+        if self.is_usable_webhook(self.feishu_webhook_url):
+            return True
+        return any(self.is_usable_webhook(url) for url in self.strategy_webhooks.values())
 
 
 _settings: Settings | None = None
@@ -106,14 +87,14 @@ _settings: Settings | None = None
 def get_settings() -> Settings:
     """返回全局 Settings 单例。
 
-    首次调用时从环境变量或 .env 文件加载配置。
-    若必填字段（feishu_webhook_url）缺失，抛出 pydantic_core.ValidationError。
+    首次调用时从环境变量或 .env 文件加载配置。所有字段均有默认值，
+    未配置飞书 Webhook 时自动降级为本地报告输出。
 
     Returns:
         Settings: 全局唯一的配置实例。
 
     Raises:
-        pydantic_core.ValidationError: 当必填字段缺失或字段类型不匹配时抛出。
+        pydantic_core.ValidationError: 当字段类型不匹配（如 SYNC_WORKERS 非整数）时抛出。
     """
     global _settings
     if _settings is None:

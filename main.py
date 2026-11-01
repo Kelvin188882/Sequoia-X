@@ -1,8 +1,10 @@
 """Sequoia-X V2 主程序入口。
 
 两种运行模式：
-  python main.py               # 日常模式：8进程增量补数据 + 跑策略 + 飞书推送（2~3分钟）
-  python main.py --backfill    # 回填模式：baostock 拉全市场历史K线（首次/补数据用，约12分钟）
+  python main.py               # 日常模式：低并发增量补数据 + 跑 7 个策略 + 生成报告
+                               #   （配置了飞书 Webhook 则推送，否则写 reports/ 本地报告 + HTML 看板）
+  python main.py --backfill    # 回填模式：baostock 拉全市场历史K线（首次/补数据用）
+                               #   低并发约 1 小时，过高并发会被 baostock 临时拉黑 IP
 """
 
 import argparse
@@ -35,7 +37,7 @@ def main() -> None:
     parser.add_argument(
         "--backfill",
         action="store_true",
-        help="回填模式：通过 baostock 拉取全市场历史 K 线（并行，约 20 分钟）",
+        help="回填模式：通过 baostock 拉取全市场历史 K 线（低并发约 1 小时，可中断续传）",
     )
     parser.add_argument(
         "--workers",
@@ -105,6 +107,14 @@ def main() -> None:
 
         if hasattr(notifier, "finalize"):
             notifier.finalize()
+
+        # 6. 生成 HTML 看板（失败不影响主流程）
+        try:
+            from sequoia_x.notify.html import build_html
+
+            build_html(settings)
+        except Exception as exc:
+            logger.warning(f"HTML 看板生成失败（Markdown 报告不受影响）：{exc}")
 
     except Exception:
         try:
