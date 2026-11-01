@@ -49,3 +49,6 @@ reports/
 data/stock_names.json
 data/*.db-wal
 data/*.db-shm
+
+# 回测产物（明细/日志不入库）
+backtest/results/
